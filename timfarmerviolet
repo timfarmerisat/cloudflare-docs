@@ -1,0 +1,534 @@
+from pathlib import Path
+import shutil, zipfile, json, hashlib, textwrap, os
+
+base = Path("/mnt/data")
+root = base / "Violet_AI_v10_Final_Deployable_System"
+if root.exists():
+    shutil.rmtree(root)
+
+dirs = [
+    "00_START_HERE",
+    "app/api/routes",
+    "app/core",
+    "app/services",
+    "frontend",
+    "deployment/gcp",
+    "deployment/local",
+    "scripts",
+    "docs",
+    "tests",
+]
+for d in dirs:
+    (root / d).mkdir(parents=True, exist_ok=True)
+
+files = {}
+
+files["00_START_HERE/README_FIRST.md"] = textwrap.dedent("""
+# Violet AI v10 Final Deployable System
+
+This is the final unified package built from the strongest parts of the previous versions.
+
+## Included
+- local LLM path through Ollama
+- offline memory store
+- keyword search
+- semantic search scaffold with embeddings hook
+- offline speech recognition hook
+- live listening scaffold
+- mobile-first frontend
+- Docker + local + Google Cloud deployment files
+- health, ready, chat, search, system, and voice routes
+- post-install steps and deployment checklist
+
+## Fast start
+1. Copy `.env.example` to `.env`
+2. Install dependencies
+3. Start locally
+4. Optionally start Ollama
+5. Open the app in your browser
+
+## Important
+This package is a deployable high-quality scaffold.
+It is not a finished native mobile app or final biometric production system.
+""").strip() + "\n"
+
+files["00_START_HERE/STEPS_AFTER_DOWNLOAD.md"] = textwrap.dedent("""
+# Steps After Download
+
+1. Unzip the package.
+2. Copy `.env.example` to `.env`
+3. Run:
+   `pip install -r requirements.txt`
+4. Start the app:
+   `uvicorn app.main:app --reload --port 8080`
+5. Open:
+   `http://localhost:8080`
+
+## Optional local AI
+```bash
+ollama pull qwen3-coder
+ollama serve
+```
+
+## Validation
+- GET `/api/health`
+- GET `/api/ready`
+- POST `/api/chat`
+- GET `/api/search?q=test`
+- GET `/api/system`
+- POST `/api/voice/live-listen`
+""").strip() + "\n"
+
+files["README.md"] = "# Violet AI v10 Final Deployable System\nSee `00_START_HERE/README_FIRST.md`.\n"
+
+files[".env.example"] = textwrap.dedent("""
+APP_NAME=Violet AI v10
+ENVIRONMENT=development
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=qwen3-coder
+OFFLINE_DB_PATH=./data/offline_memory.sqlite3
+EMBEDDINGS_MODE=stub
+EMBEDDINGS_ENDPOINT=http://localhost:8081/embeddings
+WHISPER_COMMAND=./scripts/run_whisper_local.sh
+SECRET_KEY=change_me
+PORT=8080
+""").strip() + "\n"
+
+files["requirements.txt"] = textwrap.dedent("""
+fastapi==0.116.1
+uvicorn[standard]==0.35.0
+pydantic==2.11.7
+pydantic-settings==2.10.1
+python-multipart==0.0.20
+httpx==0.28.1
+pytest==8.4.1
+""").strip() + "\n"
+
+files["Dockerfile"] = textwrap.dedent("""
+FROM python:3.11-slim
+WORKDIR /app
+COPY requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
+COPY app /app/app
+COPY frontend /app/frontend
+COPY docs /app/docs
+COPY deployment /app/deployment
+COPY scripts /app/scripts
+COPY 00_START_HERE /app/00_START_HERE
+RUN mkdir -p /app/data /app/uploads
+EXPOSE 8080
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
+""").strip() + "\n"
+
+files["docker-compose.yml"] = textwrap.dedent("""
+services:
+  violet-app:
+    build: .
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+      - ./uploads:/app/uploads
+    depends_on:
+      - ollama
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+
+volumes:
+  ollama_data:
+""").strip() + "\n"
+
+files["app/main.py"] = textwrap.dedent("""
+from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
+
+from app.api.routes import health, chat, search, system, voice
+
+app = FastAPI(title="Violet AI v10", version="10.0.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.include_router(health.router, prefix="/api")
+app.include_router(chat.router, prefix="/api")
+app.include_router(search.router, prefix="/api")
+app.include_router(system.router, prefix="/api")
+app.include_router(voice.router, prefix="/api")
+
+app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")
+""").strip() + "\n"
+
+files["app/api/routes/__init__.py"] = ""
+files["app/api/routes/health.py"] = textwrap.dedent("""
+from fastapi import APIRouter
+router = APIRouter()
+
+@router.get("/health")
+def health():
+    return {"ok": True, "service": "violet-ai-v10", "version": "10.0.0"}
+
+@router.get("/ready")
+def ready():
+    return {"ready": True, "deployable": True}
+""").strip() + "\n"
+
+files["app/api/routes/chat.py"] = textwrap.dedent("""
+from fastapi import APIRouter
+from pydantic import BaseModel
+from app.services.offline_store import store
+from app.services.ollama_service import generate_local_reply
+
+router = APIRouter()
+
+class ChatPayload(BaseModel):
+    text: str
+
+@router.post("/chat")
+async def chat(payload: ChatPayload):
+    store.add("user", payload.text)
+    reply = await generate_local_reply(payload.text)
+    if not reply:
+        reply = f"Violet fallback processed: {payload.text}"
+    store.add("assistant", reply)
+    return {"response": reply, "history_count": store.count()}
+""").strip() + "\n"
+
+files["app/api/routes/search.py"] = textwrap.dedent("""
+from fastapi import APIRouter
+from app.services.search_service import run_search
+
+router = APIRouter()
+
+@router.get("/search")
+def search(q: str):
+    return run_search(q)
+""").strip() + "\n"
+
+files["app/api/routes/system.py"] = textwrap.dedent("""
+from fastapi import APIRouter
+from app.services.offline_store import store
+from app.core.config import settings
+
+router = APIRouter()
+
+@router.get("/system")
+def system():
+    return {
+        "status": "running",
+        "version": "v10",
+        "features": [
+            "offline-memory",
+            "ollama-local-llm",
+            "semantic-search-hook",
+            "offline-speech-hook",
+            "live-listening-scaffold",
+            "mobile-ui",
+            "cloud-ready"
+        ],
+        "memory_count": store.count(),
+        "ollama_model": settings.ollama_model,
+        "embeddings_mode": settings.embeddings_mode
+    }
+""").strip() + "\n"
+
+files["app/api/routes/voice.py"] = textwrap.dedent("""
+from fastapi import APIRouter
+from pydantic import BaseModel
+from app.services.voice_service import simulate_live_listening
+
+router = APIRouter()
+
+class VoicePayload(BaseModel):
+    text: str
+
+@router.post("/voice/live-listen")
+def live_listen(payload: VoicePayload):
+    return simulate_live_listening(payload.text)
+""").strip() + "\n"
+
+files["app/core/config.py"] = textwrap.dedent("""
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    app_name: str = "Violet AI v10"
+    environment: str = "development"
+    ollama_base_url: str = "http://localhost:11434"
+    ollama_model: str = "qwen3-coder"
+    offline_db_path: str = "./data/offline_memory.sqlite3"
+    embeddings_mode: str = "stub"
+    embeddings_endpoint: str = "http://localhost:8081/embeddings"
+    whisper_command: str = "./scripts/run_whisper_local.sh"
+    secret_key: str = "change_me"
+    port: int = 8080
+
+settings = Settings()
+""").strip() + "\n"
+
+files["app/services/offline_store.py"] = textwrap.dedent("""
+import sqlite3
+from pathlib import Path
+from app.core.config import settings
+
+class OfflineStore:
+    def __init__(self):
+        self.path = Path(settings.offline_db_path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._init()
+
+    def _conn(self):
+        return sqlite3.connect(self.path)
+
+    def _init(self):
+        conn = self._conn()
+        conn.execute("CREATE TABLE IF NOT EXISTS memory (id INTEGER PRIMARY KEY, role TEXT, content TEXT)")
+        conn.commit()
+        conn.close()
+
+    def add(self, role: str, content: str):
+        conn = self._conn()
+        conn.execute("INSERT INTO memory(role, content) VALUES (?, ?)", (role, content))
+        conn.commit()
+        conn.close()
+
+    def search(self, query: str):
+        conn = self._conn()
+        rows = conn.execute(
+            "SELECT id, role, content FROM memory WHERE content LIKE ? ORDER BY id DESC LIMIT 20",
+            (f"%{query}%",)
+        ).fetchall()
+        conn.close()
+        return [{"id": r[0], "role": r[1], "content": r[2]} for r in rows]
+
+    def count(self):
+        conn = self._conn()
+        row = conn.execute("SELECT COUNT(*) FROM memory").fetchone()
+        conn.close()
+        return int(row[0])
+
+store = OfflineStore()
+""").strip() + "\n"
+
+files["app/services/ollama_service.py"] = textwrap.dedent("""
+import httpx
+from app.core.config import settings
+
+async def generate_local_reply(prompt: str) -> str:
+    payload = {"model": settings.ollama_model, "prompt": prompt, "stream": False}
+    try:
+        async with httpx.AsyncClient(timeout=90) as client:
+            res = await client.post(f"{settings.ollama_base_url}/api/generate", json=payload)
+            res.raise_for_status()
+            return res.json().get("response", "").strip()
+    except Exception:
+        return ""
+""").strip() + "\n"
+
+files["app/services/search_service.py"] = textwrap.dedent("""
+from app.services.offline_store import store
+from app.core.config import settings
+
+STATIC_KNOWLEDGE = [
+    "offline ai brain",
+    "ollama local llm integration",
+    "semantic search embeddings hook",
+    "offline speech recognition hook",
+    "deployment hardening and readiness",
+    "live listening scaffold"
+]
+
+def run_search(query: str):
+    q = query.lower()
+    keyword = [item for item in STATIC_KNOWLEDGE if q in item.lower()]
+    semantic = [{
+        "query": query,
+        "mode": settings.embeddings_mode,
+        "note": "semantic hook active",
+        "next_step": "connect embeddings endpoint or vector database"
+    }]
+    return {
+        "query": query,
+        "keyword_results": keyword,
+        "offline_memory_results": store.search(query),
+        "semantic_results": semantic
+    }
+""").strip() + "\n"
+
+files["app/services/voice_service.py"] = textwrap.dedent("""
+def simulate_live_listening(text: str):
+    return {
+        "heard": text,
+        "status": "processed",
+        "mode": "offline-speech-hook",
+        "next_step": "wire mic streaming and whisper.cpp or another local STT engine"
+    }
+""").strip() + "\n"
+
+files["frontend/index.html"] = textwrap.dedent("""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Violet AI v10</title>
+  <style>
+    body { margin:0; font-family:Arial,sans-serif; background:#0b1220; color:#eef2ff; }
+    .wrap { max-width:960px; margin:0 auto; padding:20px; }
+    .card { background:#11192c; border:1px solid #26314f; border-radius:16px; padding:16px; margin-bottom:16px; }
+    .grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+    @media (max-width:760px) { .grid { grid-template-columns:1fr; } }
+    input, textarea, button { width:100%; box-sizing:border-box; padding:12px; border-radius:12px; margin-top:8px; border:1px solid #334155; background:#0f172a; color:#eef2ff; }
+    button { background:#2563eb; cursor:pointer; }
+    pre { white-space:pre-wrap; word-break:break-word; }
+    h1, h2 { margin-top:0; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Violet AI v10 Final Deployable System</h1>
+    <div class="grid">
+      <div class="card">
+        <h2>Chat</h2>
+        <textarea id="chatInput" placeholder="Talk to Violet..."></textarea>
+        <button onclick="sendChat()">Send</button>
+      </div>
+      <div class="card">
+        <h2>Search</h2>
+        <input id="searchInput" placeholder="Search memory and knowledge..." />
+        <button onclick="runSearch()">Search</button>
+      </div>
+    </div>
+    <div class="grid">
+      <div class="card">
+        <h2>Live Listening</h2>
+        <input id="listenInput" placeholder="Simulate live listening..." />
+        <button onclick="runListen()">Process</button>
+      </div>
+      <div class="card">
+        <h2>System Status</h2>
+        <button onclick="loadSystem()">Load Status</button>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Output</h2>
+      <pre id="output">{ "ready": true }</pre>
+    </div>
+  </div>
+
+  <script>
+    async function sendChat() {
+      const text = document.getElementById('chatInput').value;
+      const res = await fetch('/api/chat', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({text})});
+      document.getElementById('output').textContent = JSON.stringify(await res.json(), null, 2);
+    }
+    async function runSearch() {
+      const q = document.getElementById('searchInput').value;
+      const res = await fetch('/api/search?q=' + encodeURIComponent(q));
+      document.getElementById('output').textContent = JSON.stringify(await res.json(), null, 2);
+    }
+    async function runListen() {
+      const text = document.getElementById('listenInput').value;
+      const res = await fetch('/api/voice/live-listen', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({text})});
+      document.getElementById('output').textContent = JSON.stringify(await res.json(), null, 2);
+    }
+    async function loadSystem() {
+      const res = await fetch('/api/system');
+      document.getElementById('output').textContent = JSON.stringify(await res.json(), null, 2);
+    }
+  </script>
+</body>
+</html>
+""").strip() + "\n"
+
+files["docs/POST_INSTALL_CHECKLIST.txt"] = textwrap.dedent("""
+POST-INSTALL CHECKLIST
+- /api/health returns ok
+- /api/ready returns ready
+- /api/chat returns response
+- /api/search returns keyword + semantic scaffold
+- /api/system shows features
+- /api/voice/live-listen responds
+- data folder is writable
+- secrets are outside the repo
+- ollama works if local AI is enabled
+""").strip() + "\n"
+
+files["deployment/local/LOCAL_COMMANDS.txt"] = textwrap.dedent("""
+cp .env.example .env
+pip install -r requirements.txt
+uvicorn app.main:app --reload --port 8080
+
+Optional:
+ollama pull qwen3-coder
+ollama serve
+docker compose up --build
+""").strip() + "\n"
+
+files["deployment/gcp/DEPLOY_GCP.txt"] = textwrap.dedent("""
+gcloud builds submit --tag us-central1-docker.pkg.dev/$GOOGLE_CLOUD_PROJECT/violet-ai/v10:latest
+
+gcloud run deploy violet-ai-v10 \
+  --image us-central1-docker.pkg.dev/$GOOGLE_CLOUD_PROJECT/violet-ai/v10:latest \
+  --region us-central1 \
+  --allow-unauthenticated
+""").strip() + "\n"
+
+files["scripts/run_whisper_local.sh"] = textwrap.dedent("""#!/usr/bin/env bash
+set -e
+AUDIO_PATH="$1"
+echo "Stub whisper local run for: $AUDIO_PATH"
+echo "Connect whisper.cpp here."
+""").strip() + "\n"
+
+files["tests/test_health.py"] = textwrap.dedent("""
+from fastapi.testclient import TestClient
+from app.main import app
+
+client = TestClient(app)
+
+def test_health():
+    res = client.get("/api/health")
+    assert res.status_code == 200
+    assert res.json()["ok"] is True
+""").strip() + "\n"
+
+for rel, content in files.items():
+    p = root / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(content, encoding="utf-8")
+
+os.chmod(root / "scripts/run_whisper_local.sh", 0o755)
+
+manifest = []
+for f in sorted(root.rglob("*")):
+    if f.is_file():
+        manifest.append({
+            "file": str(f.relative_to(root)),
+            "hash": hashlib.sha256(f.read_bytes()).hexdigest()
+        })
+
+(root / "00_START_HERE" / "MANIFEST.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
+zip_path = base / "Violet_AI_v10_Final_Deployable_System.zip"
+if zip_path.exists():
+    zip_path.unlink()
+
+with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
+    for f in root.rglob("*"):
+        if f.is_file():
+            z.write(f, f.relative_to(root))
+
+print(str(zip_path))
